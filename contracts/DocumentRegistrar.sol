@@ -10,6 +10,42 @@ import "../OpenZeppelin/openzeppelin-contracts@4.8.2/contracts/utils/structs/Enu
 contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
+    // event CollectionCreated
+    // event
+    event CollectionCreated(
+        address indexed owner,
+        bytes32 indexed collectionIndex
+    );
+
+    struct NftInfo {
+        uint16 tokenType;
+        address contractAddress;
+        uint256 tokenId;
+    }
+
+    // used as query returns
+    struct NftInfoWithIndex {
+        NftInfo content;
+        bytes32 index;
+    }
+
+    struct TextInfo {
+        bool verified;
+        string text;
+    }
+
+    struct CollectionMeta {
+        string name;
+        string description;
+        address owner;
+    }
+
+    // used as query returns
+    struct CollectionMetaWithIndex {
+        CollectionMeta content;
+        bytes32 index;
+    }
+
     modifier owningNft(NftInfo memory _nft, address owner) {
         if (_nft.tokenType == 721) {
             require(
@@ -36,34 +72,37 @@ contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
         _;
     }
 
-    struct NftInfo {
-        uint8 tokenType;
-        address contractAddress;
-        uint256 tokenId;
+    // TODO: add this modifier to addNftToCollection
+    modifier nftInWhitelist(NftInfo memory _nft) {
+        require(
+            nftContractWhitelist[_nft.contractAddress],
+            string(
+                abi.encodePacked(
+                    "NFT Contract not in whitelist: ",
+                    Strings.toHexString(_nft.contractAddress)
+                )
+            )
+        );
+        _;
     }
 
     // a global nft collection Counter
     // This counter is global to make each collection-nft unique
     uint256 nftCollectionCounter = 0;
-    // stores collection index
-    // fetch collection info using index from collectionMetaTable
+
+    // owner => collectionIndexes
     mapping(address => EnumerableSet.Bytes32Set) collections;
+    // fetch collection info using index from collectionMetaTable
     mapping(bytes32 => CollectionMeta) collectionMetaTable;
 
-    struct CollectionMeta {
-        string name;
-        string description;
-        address owner;
-        // stores nft hash
-        // fetch nft info using index from nftInfoTable
-    }
-
-    // collection index => collection nft set
+    // collection index => collection nft indexes
     mapping(bytes32 => EnumerableSet.Bytes32Set) collectionNfts;
-
     // NftInfoHash to NftInfo detail
-    // the table items will not be reused as it will make things complex to delete an Nft link
+    // the table items will not be reused as it will make things complex to delete an Nft
     mapping(bytes32 => NftInfo) collectionNftInfoTable;
+
+    // only nft in whitelist can be added
+    mapping(address => bool) nftContractWhitelist;
 
     function collectionNftInfoHash(
         bytes32 collectionIndex,
@@ -80,16 +119,47 @@ contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
             );
     }
 
-    constructor() ERC721("DIDCentral", "DIDC") {}
+    constructor() ERC721("DocumentRegistrar", "DR") {}
 
-    function mint() public {
+    function mint() public returns (uint256) {
         uint256 tokenId = uint256(uint160(msg.sender));
         _safeMint(msg.sender, tokenId);
         _createDocument();
         bytes32 MANAGER_ROLE = keccak256(
             abi.encode(msg.sender, "MANAGER_ROLE")
         );
-        grantRole(MANAGER_ROLE, msg.sender);
+        bytes32 ADMIN_ROLE = keccak256(abi.encode(msg.sender, "ADMIN_ROLE"));
+        _setRoleAdmin(MANAGER_ROLE, ADMIN_ROLE);
+        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(MANAGER_ROLE, msg.sender);
+        return tokenId;
+    }
+
+    function grantManager(address new_manager) public {
+        require(_exists(uint256(uint160(msg.sender))), "Should mint before granting manager");
+        bytes32 MANAGER_ROLE = keccak256(
+            abi.encode(msg.sender, "MANAGER_ROLE")
+        );
+        _grantRole(MANAGER_ROLE, new_manager);
+    }
+
+    // ==== block token transfer ====
+
+    function transferFrom(
+        address,
+        address,
+        uint256
+    ) public pure override(ERC721, IERC721) {
+        require(false, "Token transfers are currently disabled.");
+    }
+
+    function safeTransferFrom(
+        address,
+        address,
+        uint256,
+        bytes memory
+    ) public pure override(ERC721, IERC721) {
+        require(false, "Token transfers are currently disabled.");
     }
 
     // initialize DocumentInfo in documentInfoTable
@@ -100,11 +170,6 @@ contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
     }
 
     // ======== text control ========
-
-    struct TextInfo {
-        bool verified;
-        string text;
-    }
 
     mapping(address => mapping(string => TextInfo)) textInfoTable;
 
@@ -147,7 +212,7 @@ contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
         address owner,
         string memory collectionName,
         string memory collectionDescription
-    ) public onlyManager(owner) {
+    ) public onlyManager(owner) returns (bytes32) {
         bytes32 collectionIndex = bytes32(nftCollectionCounter);
         nftCollectionCounter += 1;
         collections[owner].add(collectionIndex);
@@ -156,12 +221,66 @@ contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
             description: collectionDescription,
             owner: owner
         });
+        emit CollectionCreated(owner, collectionIndex);
+        return collectionIndex;
     }
 
-    function addNftLinkToCollection(
+    function nftCollection(
+        bytes32 collectionIndex
+    ) public view returns (CollectionMeta memory) {
+        return collectionMetaTable[collectionIndex];
+    }
+
+    function nftCollectionIndexesOfOwner(
+        address owner
+    ) public view returns (bytes32[] memory) {
+        return collections[owner].values();
+    }
+
+    function nftCollectionsOfOwner(
+        address owner
+    ) public view returns (CollectionMetaWithIndex[] memory) {
+        bytes32[] memory indexes = collections[owner].values();
+        CollectionMetaWithIndex[]
+            memory ownerCollections = new CollectionMetaWithIndex[](
+                indexes.length
+            );
+        for (uint i = 0; i < indexes.length; i++) {
+            ownerCollections[i] = CollectionMetaWithIndex({
+                content: collectionMetaTable[indexes[i]],
+                index: indexes[i]
+            });
+        }
+        return ownerCollections;
+    }
+
+    function nft(bytes32 nftIndex) public view returns (NftInfo memory) {
+        return collectionNftInfoTable[nftIndex];
+    }
+
+    function nftIndexesOfCollection(
+        bytes32 collectionIndex
+    ) public view returns (bytes32[] memory) {
+        return collectionNfts[collectionIndex].values();
+    }
+
+    function nftsOfCollection(
+        bytes32 collectionIndex
+    ) public view returns (NftInfo[] memory) {
+        bytes32[] memory indexes = nftIndexesOfCollection(collectionIndex);
+        NftInfo[] memory nfts = new NftInfo[](indexes.length);
+        for (uint i = 0; i < indexes.length; i++) {
+            nfts[i] = collectionNftInfoTable[indexes[i]];
+        }
+        return nfts;
+    }
+
+    // this is not a public api,
+    // the manager check is done in `addNftLinksToCollection`
+    function addNftToCollection(
         bytes32 collectionIndex,
         NftInfo memory _nft
-    ) public onlyManager(collectionMetaTable[collectionIndex].owner) owningNft(_nft, collectionMetaTable[collectionIndex].owner) {
+    ) internal owningNft(_nft, collectionMetaTable[collectionIndex].owner) {
         // store nft in nftInfoTable
         bytes32 nftLinkIndex = collectionNftInfoHash(collectionIndex, _nft);
         collectionNftInfoTable[nftLinkIndex] = _nft;
@@ -169,6 +288,16 @@ contract DocumentRegistrar is ERC721Enumerable, AccessControlEnumerable {
         collectionNfts[collectionIndex].add(nftLinkIndex);
     }
 
+    function addNftsToCollection(
+        bytes32 collectionIndex,
+        NftInfo[] memory nfts
+    ) public onlyManager(collectionMetaTable[collectionIndex].owner) {
+        for (uint i = 0; i < nfts.length; i++) {
+            addNftToCollection(collectionIndex, nfts[i]);
+        }
+    }
+
+    // TODO: check implementation
     function supportsInterface(
         bytes4 interfaceId
     )
